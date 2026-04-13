@@ -228,11 +228,11 @@ class RSSHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    print(f"Fetching events from Roig Arena...")
-    events = fetch_all_events()
-    print(f"Found {len(events)} events across all pages")
-
     import sys
+    print(f"Fetching events from Roig Arena...", file=sys.stderr)
+    events = fetch_all_events()
+    print(f"Found {len(events)} events across all pages", file=sys.stderr)
+
     if "--once" in sys.argv:
         xml = build_rss(events)
         sys.stdout.buffer.write(xml)
