@@ -4,6 +4,8 @@ RSS feed generator for upcoming events at [Roig Arena](https://www.roigarena.com
 
 The feed is generated daily via GitHub Actions and published to GitHub Pages.
 
+Go to the daily generated feed here: [https://nilsbeck.github.io/roig-arena-rss-feed/feed.xml](https://nilsbeck.github.io/roig-arena-rss-feed/feed.xml) 
+
 ## How it works
 
 The script scrapes the Roig Arena events page, parses the Nuxt SSR payload embedded in the HTML, and builds an RSS 2.0 feed with event details including dates, prices, categories, images, and ticket links.
