@@ -148,7 +148,7 @@ def build_rss(events: list[dict]) -> bytes:
         purchase_link = event.get("purchaseLink", "")
         description_text = event.get("description", "")
 
-        event_url = f"{BASE_URL}/es/eventos/{slug}" if slug else purchase_link
+        event_url = f"{BASE_URL}/es/event/{slug}" if slug else purchase_link
 
         SubElement(item, "title").text = name
         SubElement(item, "link").text = event_url
