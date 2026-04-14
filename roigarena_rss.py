@@ -12,6 +12,9 @@ import urllib.request
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from xml.etree.ElementTree import Element, SubElement, tostring
+from zoneinfo import ZoneInfo
+
+VALENCIA_TZ = ZoneInfo("Europe/Madrid")
 
 BASE_URL = "https://www.roigarena.com"
 EVENTS_URL = f"{BASE_URL}/es/eventos/?layout=list"
@@ -101,22 +104,25 @@ def fetch_all_events() -> list[dict]:
     return events
 
 
-def format_date_rfc822(iso_str: str) -> str:
-    """Convert ISO date string to RFC 822 format for RSS."""
+def parse_event_datetime(iso_str: str) -> datetime | None:
+    """Parse ISO date string and convert to Valencia local time."""
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return dt.strftime("%a, %d %b %Y %H:%M:%S %z")
+        return dt.astimezone(VALENCIA_TZ)
     except (ValueError, AttributeError):
-        return ""
+        return None
+
+
+def format_date_rfc822(iso_str: str) -> str:
+    """Convert ISO date string to RFC 822 format for RSS (Valencia time)."""
+    dt = parse_event_datetime(iso_str)
+    return dt.strftime("%a, %d %b %Y %H:%M:%S %z") if dt else ""
 
 
 def format_date_display(iso_str: str) -> str:
-    """Format date for human display: DD/MM/YYYY HH:MM."""
-    try:
-        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return dt.strftime("%d/%m/%Y %H:%M")
-    except (ValueError, AttributeError):
-        return ""
+    """Format date for human display: DD/MM/YYYY HH:MM (Valencia time)."""
+    dt = parse_event_datetime(iso_str)
+    return dt.strftime("%d/%m/%Y %H:%M") if dt else ""
 
 
 def build_rss(events: list[dict]) -> bytes:
