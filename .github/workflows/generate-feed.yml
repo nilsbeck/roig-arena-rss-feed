@@ -2,7 +2,7 @@ name: Generate RSS Feed
 
 on:
   schedule:
-    - cron: "0 6 * * *" # Daily at 06:00 UTC
+    - cron: "0 3 * * *" # Daily at 03:00 UTC
   workflow_dispatch: # Allow manual trigger
 
 permissions:
