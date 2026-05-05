@@ -8,6 +8,9 @@ and serves an RSS feed on a local HTTP server.
 import json
 import math
 import re
+import sys
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -21,38 +24,67 @@ EVENTS_URL = f"{BASE_URL}/es/eventos/?layout=list"
 ITEMS_PER_PAGE = 8
 PORT = 8888
 
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+}
+
 
 def fetch_page(page: int) -> str:
     url = f"{EVENTS_URL}&page={page}" if page > 1 else EVENTS_URL
-    req = urllib.request.Request(url, headers={"User-Agent": "RoigArenaRSS/1.0"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return resp.read().decode("utf-8")
+    req = urllib.request.Request(url, headers=_HEADERS)
+    last_exc: Exception = RuntimeError("no attempts made")
+    for attempt in range(3):
+        if attempt:
+            delay = 2 ** attempt
+            print(f"Retrying in {delay}s (attempt {attempt + 1}/3)...", file=sys.stderr)
+            time.sleep(delay)
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            print(f"HTTP {e.code} fetching page {page}", file=sys.stderr)
+            last_exc = e
+            if e.code in (403, 404, 410):
+                break  # no point retrying client errors
+        except Exception as e:
+            print(f"Error fetching page {page}: {e}", file=sys.stderr)
+            last_exc = e
+    raise last_exc
 
 
 def resolve_nuxt_value(data: list, index: int, depth: int = 0) -> object:
     """Resolve a Nuxt payload index reference to its actual value."""
-    if depth > 5 or index >= len(data):
-        return None
+    if not isinstance(index, int) or depth > 5 or index >= len(data):
+        return index  # return as-is if not a valid index reference
     return data[index]
 
 
-def parse_events_from_html(html: str) -> tuple[list[dict], int]:
-    """Extract event objects from Nuxt SSR payload embedded in HTML."""
-    match = re.search(
-        r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
-    )
-    if not match:
-        return [], 0
+def _resolve_event(data: list, event_obj: dict) -> dict:
+    event = {}
+    for key, val_idx in event_obj.items():
+        val = resolve_nuxt_value(data, val_idx)
+        if isinstance(val, list):
+            val = [resolve_nuxt_value(data, i) for i in val]
+        event[key] = val
+    return event
 
-    data = json.loads(match.group(1))
 
-    # Navigate the payload structure:
-    # data[1] = root object with "data" key pointing to index
-    # data[root.data] = ShallowReactive wrapper
-    # data[wrapper+1] = {"events-list": idx, ...}
-    # data[events_list_idx] = {"data": events_array_idx, "total": total_idx}
+def _parse_structured(data: list) -> tuple[list[dict], int]:
+    """Primary strategy: navigate the known Nuxt SSR payload index structure."""
     root = data[1]
+    if not isinstance(root, dict) or "data" not in root:
+        raise ValueError("unexpected root structure")
+
     inner = data[root["data"] + 1]  # skip ShallowReactive marker
+    if not isinstance(inner, dict):
+        raise ValueError("unexpected inner structure")
 
     events_list_key = None
     for key in inner:
@@ -61,24 +93,62 @@ def parse_events_from_html(html: str) -> tuple[list[dict], int]:
             break
 
     if not events_list_key:
-        return [], 0
+        raise ValueError("events-list key not found")
 
     events_meta = data[inner[events_list_key]]
     total = data[events_meta["total"]]
     event_indices = data[events_meta["data"]]
 
+    events = [_resolve_event(data, data[idx]) for idx in event_indices]
+    return events, total
+
+
+def _parse_scan(data: list) -> tuple[list[dict], int]:
+    """Fallback strategy: scan the flat payload array for event-shaped objects."""
+    # Events have at minimum "name" and "slug" with integer index values
+    required = {"name", "slug"}
     events = []
-    for idx in event_indices:
-        event_obj = data[idx]
-        event = {}
-        for key, val_idx in event_obj.items():
-            val = resolve_nuxt_value(data, val_idx)
-            # For array values (like externalPurchaseLinks), resolve inner refs
-            if isinstance(val, list):
-                val = [resolve_nuxt_value(data, i) for i in val]
-            event[key] = val
+    seen: set = set()
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if not required.issubset(item.keys()):
+            continue
+        # All values must be integer indices (Nuxt devalue reference format)
+        if not all(isinstance(v, int) for v in item.values()):
+            continue
+        event = _resolve_event(data, item)
+        ident = event.get("slug") or event.get("name")
+        if not ident or ident in seen:
+            continue
+        seen.add(ident)
         events.append(event)
 
+    return events, len(events)
+
+
+def parse_events_from_html(html: str) -> tuple[list[dict], int]:
+    """Extract event objects from Nuxt SSR payload embedded in HTML."""
+    match = re.search(
+        r'<script[^>]*id="__NUXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL
+    )
+    if not match:
+        print("WARNING: __NUXT_DATA__ script tag not found in HTML", file=sys.stderr)
+        return [], 0
+
+    data = json.loads(match.group(1))
+    print(f"Nuxt payload: {len(data)} entries", file=sys.stderr)
+
+    try:
+        events, total = _parse_structured(data)
+        print(f"Structured parse: {len(events)} events (total={total})", file=sys.stderr)
+        return events, total
+    except Exception as e:
+        print(f"Structured parse failed ({e}), trying scan fallback...", file=sys.stderr)
+
+    events, total = _parse_scan(data)
+    print(f"Scan parse: {len(events)} events", file=sys.stderr)
     return events, total
 
 
@@ -98,7 +168,7 @@ def fetch_all_events() -> list[dict]:
                 break
             events.extend(page_events)
         except Exception as e:
-            print(f"Error fetching page {page}: {e}")
+            print(f"Error fetching page {page}: {e}", file=sys.stderr)
             break
 
     return events
@@ -234,10 +304,13 @@ class RSSHandler(BaseHTTPRequestHandler):
 
 
 def main():
-    import sys
-    print(f"Fetching events from Roig Arena...", file=sys.stderr)
+    print("Fetching events from Roig Arena...", file=sys.stderr)
     events = fetch_all_events()
     print(f"Found {len(events)} events across all pages", file=sys.stderr)
+
+    if not events:
+        print("ERROR: no events found — aborting to avoid publishing empty feed", file=sys.stderr)
+        sys.exit(1)
 
     if "--once" in sys.argv:
         xml = build_rss(events)

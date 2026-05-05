@@ -27,8 +27,35 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Restore cached feed
+        id: cache-feed
+        uses: actions/cache/restore@v4
+        with:
+          path: feed.xml
+          key: feed-xml-${{ github.run_id }}
+          restore-keys: feed-xml-
+
       - name: Generate RSS feed
+        id: generate
+        continue-on-error: true
         run: python roigarena_rss.py --once > feed.xml
+
+      - name: Use cached feed on failure
+        if: steps.generate.outcome == 'failure'
+        run: |
+          if [ -f feed.xml ]; then
+            echo "Generation failed — using cached feed.xml from previous run"
+          else
+            echo "Generation failed and no cached feed available"
+            exit 1
+          fi
+
+      - name: Save feed to cache
+        if: steps.generate.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: feed.xml
+          key: feed-xml-${{ github.run_id }}
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
