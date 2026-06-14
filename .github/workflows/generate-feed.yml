@@ -20,6 +20,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      generated: ${{ steps.generate.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,15 +40,25 @@ jobs:
       - name: Generate RSS feed
         id: generate
         continue-on-error: true
-        run: python roigarena_rss.py --once > feed.xml
+        run: |
+          set -o pipefail
+          # Write to a temp file first so a failed run never clobbers a good feed.
+          python roigarena_rss.py --once > feed.xml.tmp
+          # Sanity check: the feed must contain at least one item.
+          if ! grep -q "<item>" feed.xml.tmp; then
+            echo "::error::Generated feed contains no <item> entries"
+            exit 1
+          fi
+          mv feed.xml.tmp feed.xml
 
       - name: Use cached feed on failure
         if: steps.generate.outcome == 'failure'
         run: |
+          rm -f feed.xml.tmp
           if [ -f feed.xml ]; then
-            echo "Generation failed — using cached feed.xml from previous run"
+            echo "::warning::Generation failed — deploying cached feed.xml from a previous run"
           else
-            echo "Generation failed and no cached feed available"
+            echo "::error::Generation failed and no cached feed available"
             exit 1
           fi
 
@@ -72,3 +84,17 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # Mark the whole run as failed (→ GitHub notification) if the feed could not
+  # be freshly generated, even though a cached feed was deployed to keep the
+  # feed live.
+  report-status:
+    needs: [build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if feed generation did not succeed
+        if: needs.build.outputs.generated != 'success'
+        run: |
+          echo "::error::Feed generation failed; a cached feed was deployed instead. Investigate roigarena_rss.py / the source site."
+          exit 1

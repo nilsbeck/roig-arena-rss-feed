@@ -5,6 +5,7 @@ Scrapes https://www.roigarena.com/es/eventos/?layout=list with pagination
 and serves an RSS feed on a local HTTP server.
 """
 
+import gzip
 import json
 import math
 import re
@@ -12,6 +13,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zlib
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from xml.etree.ElementTree import Element, SubElement, tostring
@@ -47,7 +49,9 @@ def fetch_page(page: int) -> str:
             time.sleep(delay)
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
-                return resp.read().decode("utf-8")
+                raw = resp.read()
+            encoding = (resp.headers.get("Content-Encoding") or "").lower()
+            return _decode_body(raw, encoding)
         except urllib.error.HTTPError as e:
             print(f"HTTP {e.code} fetching page {page}", file=sys.stderr)
             last_exc = e
@@ -57,6 +61,23 @@ def fetch_page(page: int) -> str:
             print(f"Error fetching page {page}: {e}", file=sys.stderr)
             last_exc = e
     raise last_exc
+
+
+def _decode_body(raw: bytes, encoding: str) -> str:
+    """Decode an HTTP response body, decompressing gzip/deflate if needed.
+
+    The server returns a compressed body on some hosts (e.g. GitHub Actions
+    runners), which we request via Accept-Encoding. Decode based on the
+    Content-Encoding header, falling back to gzip magic-byte sniffing.
+    """
+    if encoding == "gzip" or raw[:2] == b"\x1f\x8b":
+        raw = gzip.decompress(raw)
+    elif encoding == "deflate":
+        try:
+            raw = zlib.decompress(raw)
+        except zlib.error:
+            raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+    return raw.decode("utf-8")
 
 
 def resolve_nuxt_value(data: list, index: int, depth: int = 0) -> object:
